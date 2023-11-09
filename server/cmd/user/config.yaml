@@ -1,0 +1,4 @@
+host: '127.0.0.1'
+base-port: 8500
+port: 8520
+key: 'moyuban/user_srv'
