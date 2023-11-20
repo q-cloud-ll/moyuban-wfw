@@ -3,12 +3,54 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"project/server/cmd/api/config"
+	"project/server/cmd/api/initialize"
+	"project/server/cmd/api/initialize/rpc"
+	"time"
+
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/hertz-contrib/http2/factory"
+
+	cfg "github.com/hertz-contrib/http2/config"
+	hertztracing "github.com/hertz-contrib/obs-opentelemetry/tracing"
+	hertzSentinel "github.com/hertz-contrib/opensergo/sentinel/adapter"
+	"github.com/hertz-contrib/pprof"
 )
 
 func main() {
-	h := server.Default()
+	initialize.InitLogger()
+	initialize.InitConfig()
+	r, info := initialize.InitRegistry()
+	initialize.InitSentinel()
+	tracer, trcCfg := hertztracing.NewServerTracer()
+	rpc.Init()
 
+	h := server.New(
+		tracer,
+		server.WithALPN(true),
+		server.WithHostPorts(fmt.Sprintf(":%d", config.GlobalServerConfig.Port)),
+		server.WithRegistry(r, info),
+		server.WithHandleMethodNotAllowed(true))
+
+	// add h2
+	h.AddProtocol("h2", factory.NewServerFactory(
+		cfg.WithReadTimeout(time.Minute),
+		cfg.WithDisableKeepAlive(false)))
+	//tlsCfg.NextProtos = append(tlsCfg.NextProtos, "h2")
+	// use pprof & tracer & sentinel
+	pprof.Register(h)
+	h.Use(hertztracing.ServerMiddleware(trcCfg))
+	h.Use(hertzSentinel.SentinelServerMiddleware(
+		// abort with status 429 by default
+		hertzSentinel.WithServerBlockFallback(func(c context.Context, ctx *app.RequestContext) {
+			ctx.JSON(http.StatusTooManyRequests, nil)
+			ctx.Abort()
+		}),
+	))
 	register(h)
 	h.Spin()
 }
